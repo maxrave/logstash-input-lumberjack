@@ -35,6 +35,10 @@ class LogStash::Inputs::Lumberjack < LogStash::Inputs::Base
   # trying to connect to logstash which have a blocked pipeline and will 
   # make logstash crash with an out of memory exception.
   config :max_clients, :validate => :number, :default => 1000
+  
+  # The field name where the client IP address should be stored in each message
+  config :client_address_field, :validate => :string, :default => nil
+
 
   # TODO(sissel): Add CA to authenticate clients with.
 
@@ -82,9 +86,12 @@ class LogStash::Inputs::Lumberjack < LogStash::Inputs::Base
         if @circuit_breaker.closed?
           connection = @lumberjack.accept # Blocking call that creates a new connection
 
-          invoke(connection, codec.clone) do |_codec, line, fields|
+          invoke(connection, codec.clone) do |_codec, line, fields, client_address|
             _codec.decode(line) do |event|
               decorate(event)
+               if !@client_address_field.nil?
+                 event[@client_address_field] = client_address
+              end
               fields.each { |k,v| event[k] = v; v.force_encoding(Encoding::UTF_8) }
 
               @circuit_breaker.execute { @buffered_queue << event }
@@ -118,8 +125,8 @@ class LogStash::Inputs::Lumberjack < LogStash::Inputs::Base
   def invoke(connection, codec, &block)
     @threadpool.post do
       begin
-        connection.run do |fields|
-          block.call(codec, fields.delete("line"), fields)
+        connection.run do |fields, client_address|
+          block.call(codec, fields.delete("line"), fields, client_address)
         end
       rescue => e
         @logger.error("Exception in lumberjack input thread", :exception => e)
